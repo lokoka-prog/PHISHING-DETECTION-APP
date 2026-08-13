@@ -78,7 +78,6 @@ model = load_phishing_model()
 
 def extract_url_features(url_string):
     """Maps structured URL attributes into numeric arrays for robust analysis."""
-    # Example feature mapping matching standard phishing datasets (e.g., 30 standard indicators)
     features = [
         1 if "https" in url_string else -1,
         -1 if len(url_string) > 75 else 1,
@@ -87,7 +86,6 @@ def extract_url_features(url_string):
         -1 if "-" in url_string else 1,
         1 if "." in url_string else -1
     ]
-    # Pad or slice to match expected dimensionality if needed
     while len(features) < 30:
         features.append(1)
     return features[:30]
@@ -98,6 +96,10 @@ def predict_safely(model_obj, text_content):
     if model_obj is None:
         raise AttributeError("Model is not loaded.")
 
+    processed_input = text_content
+    if isinstance(text_content, str):
+        processed_input = extract_url_features(text_content)
+
     if isinstance(model_obj, (list, tuple)):
         clf = next((obj for obj in model_obj if not isinstance(obj, str) and hasattr(obj, "predict")), None)
         preprocessor = next((obj for obj in model_obj if not isinstance(obj, str) and hasattr(obj, "transform") and not hasattr(obj, "predict")), None)
@@ -105,19 +107,18 @@ def predict_safely(model_obj, text_content):
         if not clf:
             raise AttributeError("No valid classifier with a .predict() method found in model bundle.")
         
-        processed_input = text_content
-        if isinstance(text_content, str):
-            if preprocessor and hasattr(preprocessor, "transform"):
+        if preprocessor and hasattr(preprocessor, "transform") and isinstance(text_content, str):
+            try:
                 processed_input = preprocessor.transform([text_content])
-            else:
-                # Apply structural feature extraction if text looks like a URL
+            except Exception:
                 processed_input = [extract_url_features(text_content)]
 
-        return clf.predict(processed_input if hasattr(processed_input, "shape") else [processed_input])[0]
+        input_array = processed_input if hasattr(processed_input, "shape") else [processed_input]
+        return clf.predict(input_array)[0]
     
     if hasattr(model_obj, "predict"):
-        processed_input = [extract_url_features(text_content)] if isinstance(text_content, str) else [text_content]
-        return model_obj.predict(processed_input)[0]
+        input_array = processed_input if hasattr(processed_input, "shape") else [processed_input]
+        return model_obj.predict(input_array)[0]
         
     raise TypeError("Loaded model object is not a valid classifier or estimator.")
 
@@ -152,7 +153,7 @@ class TestPhishingPipeline(unittest.TestCase):
     def test_url_feature_extraction(self):
         feats = extract_url_features("https://example.com")
         self.assertEqual(len(feats), 30)
-        self.assertEqual(feats[0], 1) # https check
+        self.assertEqual(feats[0], 1)
 
     def test_predict_safely_mock(self):
         class MockModel:
@@ -162,7 +163,6 @@ class TestPhishingPipeline(unittest.TestCase):
         res = predict_safely(MockModel(), "http://malicious-site.com")
         self.assertEqual(res, 1)
 
-# Run internal tests quietly on startup check
 def run_unit_tests():
     suite = unittest.TestLoader().loadTestsFromTestCase(TestPhishingPipeline)
     runner = unittest.TextTestRunner(verbosity=0)
@@ -318,7 +318,6 @@ elif authentication_status:
 
                 risk_score = calculate_risk_score(model, email_input, result)
 
-                # Optimized Streamlit Layout for Threat Metrics Cards
                 st.markdown("### Threat Analysis Dashboard")
                 metric_col1, metric_col2, metric_col3 = st.columns(3)
 
