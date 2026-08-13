@@ -7,6 +7,13 @@ from yaml.loader import SafeLoader
 from database import init_db, log_prediction, fetch_logs
 
 # ---------------------------------------------------------
+# Base Path Setup
+# ---------------------------------------------------------
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_PATH = os.path.join(BASE_DIR, 'config.yaml')
+MODEL_PATH = os.path.join(BASE_DIR, 'model_features.pkl')
+
+# ---------------------------------------------------------
 # 1. Page Configuration & Custom CSS
 # ---------------------------------------------------------
 st.set_page_config(page_title="AI Email & Phishing Detector", layout="wide")
@@ -42,17 +49,16 @@ init_db()
 # ---------------------------------------------------------
 @st.cache_resource
 def load_phishing_model():
-    """Loads the model_features.pkl file from the current directory."""
-    model_path = "model_features.pkl"
-    if os.path.exists(model_path):
+    """Loads the model_features.pkl file using absolute pathing."""
+    if os.path.exists(MODEL_PATH):
         try:
-            model = joblib.load(model_path)
+            model = joblib.load(MODEL_PATH)
             return model
         except Exception as e:
             st.error(f"Error loading model_features.pkl: {e}")
             return None
     else:
-        st.warning(f"Model file '{model_path}' not found. Please place model_features.pkl in this directory.")
+        st.warning(f"Model file 'model_features.pkl' not found at {MODEL_PATH}.")
         return None
 
 model = load_phishing_model()
@@ -60,7 +66,11 @@ model = load_phishing_model()
 # ---------------------------------------------------------
 # 3. User Credentials & Authentication Configuration
 # ---------------------------------------------------------
-with open('config.yaml') as file:
+if not os.path.exists(CONFIG_PATH):
+    st.error("⚠️ `config.yaml` not found. Please ensure it exists in your root repository directory.")
+    st.stop()
+
+with open(CONFIG_PATH) as file:
     config = yaml.load(file, Loader=SafeLoader)
 
 authenticator = stauth.Authenticate(
@@ -70,7 +80,7 @@ authenticator = stauth.Authenticate(
     config['cookie']['expiry_days'],
 )
 
-# Updated syntax specifying location as a keyword argument
+# Render login component using modern location keyword syntax
 authenticator.login(location='main')
 name = st.session_state.get('name')
 authentication_status = st.session_state.get('authentication_status')
@@ -85,12 +95,13 @@ if authentication_status is False:
 elif authentication_status is None:
     st.warning("Please enter your username and password")
     
-    # Registration form for new users
+    # Registration form for new users (Updated API syntax)
     with st.expander("Register New Account"):
         try:
-            if authenticator.register_user('Register user', preauthorization=False):
+            res = authenticator.register_user()
+            if res and res[0]:  # Successfully registered
                 st.success('User registered successfully')
-                with open('config.yaml', 'w') as file:
+                with open(CONFIG_PATH, 'w') as file:
                     yaml.dump(config, file, default_flow_style=False)
         except Exception as e:
             st.error(e)
@@ -117,7 +128,6 @@ elif authentication_status:
                 # Perform prediction if model is loaded
                 if model is not None:
                     try:
-                        # Predict using the loaded model
                         prediction = model.predict([email_input])[0]
                         
                         # Interpret prediction result
