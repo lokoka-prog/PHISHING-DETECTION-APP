@@ -67,18 +67,43 @@ def load_phishing_model():
         )
         return None
 
-
 model = load_phishing_model()
 
+def predict_safely(model_obj, text_content):
+    """Safely predicts using either a direct Pipeline or a [vectorizer, classifier] list."""
+    if isinstance(model_obj, (list, tuple)):
+        clf = next((obj for obj in model_obj if hasattr(obj, "predict") and not hasattr(obj, "transform")), None)
+        vec = next((obj for obj in model_obj if hasattr(obj, "transform") and not hasattr(obj, "predict")), None)
+
+        if vec and clf:
+            transformed_input = vec.transform([text_content])
+            return clf.predict(transformed_input)[0]
+        elif clf:
+            return clf.predict([text_content])[0]
+        else:
+            return model_obj[0].predict([text_content])[0]
+    
+    return model_obj.predict([text_content])[0]
 
 def calculate_risk_score(model_obj, text_content, prediction_result):
     """Calculates risk score percentage using predict_proba if available, fallback to boolean scoring."""
-    if model_obj is not None and hasattr(model_obj, "predict_proba"):
+    if model_obj is not None:
         try:
-            proba = model_obj.predict_proba([text_content])[0]
-            # Assuming class index 1 is phishing
-            risk_pct = round(proba[1] * 100, 2) if len(proba) > 1 else proba[0] * 100
-            return float(risk_pct)
+            clf = model_obj
+            input_data = [text_content]
+
+            # Unpack if loaded as list/tuple
+            if isinstance(model_obj, (list, tuple)):
+                clf = next((obj for obj in model_obj if hasattr(obj, "predict_proba")), None)
+                vec = next((obj for obj in model_obj if hasattr(obj, "transform") and not hasattr(obj, "predict")), None)
+                if vec:
+                    input_data = vec.transform([text_content])
+
+            if clf and hasattr(clf, "predict_proba"):
+                proba = clf.predict_proba(input_data)[0]
+                # Assuming class index 1 is phishing
+                risk_pct = round(proba[1] * 100, 2) if len(proba) > 1 else proba[0] * 100
+                return float(risk_pct)
         except Exception:
             pass
 
@@ -121,7 +146,8 @@ def process_imap_inbox(user_email, email_password, imap_server, username):
                     full_content = f"Subject: {subject}\n\n{body}"
 
                     if model is not None:
-                        pred = model.predict([full_content])[0]
+                        # Used new safe unpack function to prevent crashes in background polling
+                        pred = predict_safely(model, full_content)
                         res_str = (
                             "Phishing Detected"
                             if pred in [1, "Phishing", "phishing", "1"]
@@ -223,7 +249,8 @@ elif authentication_status:
 
                 if model is not None:
                     try:
-                        prediction = model.predict([email_input])[0]
+                        # Used new safe unpack function
+                        prediction = predict_safely(model, email_input)
                         if prediction in [1, "Phishing", "phishing", "1"]:
                             result = "Phishing Detected"
                         else:
