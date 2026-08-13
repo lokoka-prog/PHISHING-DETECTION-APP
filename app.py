@@ -101,12 +101,6 @@ def check_and_retrain_model(accuracy_threshold=0.80):
         current_accuracy = latest_metric.get("accuracy", 1.0)
 
         if current_accuracy < accuracy_threshold:
-            # Threshold breached: Initiate Retraining Protocol
-            # Placeholder or import for actual model training script execution (e.g., train.py logic)
-            # Example execution:
-            # from train import retrain_pipeline
-            # new_acc, new_prec, new_rec = retrain_pipeline()
-
             # Simulated successful retraining output metrics for production update
             new_acc, new_prec, new_rec = 0.92, 0.90, 0.91
 
@@ -252,12 +246,11 @@ elif authentication_status:
 
     st.title("🛡️ AI Email & URL Phishing Detection Platform")
 
-    tab_detector, tab_accounts, tab_logs, tab_perf = st.tabs(
+    tab_detector, tab_accounts, tab_logs = st.tabs(
         [
             "🔗 URL & Content Checker",
             "📧 Connected Email Accounts",
             "📊 Audit Logs",
-            "📈 Performance History",
         ]
     )
 
@@ -304,7 +297,7 @@ elif authentication_status:
                     check_source = "Offline"
 
                 st.markdown("### Threat Analysis Dashboard")
-                metric_col1, metric_col2, metric_col3 = st.columns(3)
+                metric_col1, metric_col2 = st.columns(2)
 
                 with metric_col1:
                     if result == "Phishing Detected":
@@ -322,34 +315,9 @@ elif authentication_status:
                     else:
                         st.warning(f"**Classification**\n\n{result}")
 
-                with metric_col2:
-                    if result == "Safe":
-                        st.metric(
-                            label="Safety Confidence Score",
-                            value=f"{raw_conf}%",
-                            delta="Legitimate / Safe",
-                            delta_color="normal",
-                        )
-                        risk_score_to_log = round(100.0 - raw_conf, 2)
-                    elif result == "Phishing Detected":
-                        st.metric(
-                            label="Calculated Risk Score",
-                            value=f"{raw_conf}%",
-                            delta=(
-                                "Critical Threat"
-                                if raw_conf > 75
-                                else "Moderate Risk"
-                            ),
-                            delta_color="inverse",
-                        )
-                        risk_score_to_log = raw_conf
-                    else:
-                        st.metric(
-                            label="Risk Score", value="0.0%", delta="N/A"
-                        )
-                        risk_score_to_log = 0.0
+                    risk_score_to_log = raw_conf if result == "Phishing Detected" else 0.0
 
-                with metric_col3:
+                with metric_col2:
                     confidence_level = (
                         "High Confidence"
                         if predictor is not None
@@ -509,74 +477,3 @@ elif authentication_status:
                 st.error(f"Error fetching audit logs: {e}")
         else:
             st.warning("Unable to identify current session user.")
-
-    # --- TAB 4: Performance History & Automated Retraining ---
-    with tab_perf:
-        st.header("Model Performance Trends & Retraining Loop")
-        st.caption(
-            "Evaluate operational model accuracy and trigger automated loop checks."
-        )
-
-        col_chk, col_info = st.columns([1, 2])
-        with col_chk:
-            if st.button("🔄 Run Performance Check & Retrain Loop"):
-                with st.spinner(
-                    "Evaluating metrics against database history..."
-                ):
-                    status_message = check_and_retrain_model(
-                        accuracy_threshold=0.80
-                    )
-                    st.info(status_message)
-
-        try:
-            metrics_list = fetch_performance_metrics()
-            if metrics_list:
-                perf_df = pd.DataFrame(metrics_list)
-                perf_df["timestamp"] = pd.to_datetime(perf_df["timestamp"])
-                perf_df = perf_df.sort_values("timestamp")
-
-                fig, axes = plt.subplots(3, 1, figsize=(8, 10), sharex=True)
-
-                axes[0].plot(
-                    perf_df["timestamp"],
-                    perf_df["accuracy"],
-                    marker="o",
-                    color="b",
-                    label="Accuracy",
-                )
-                axes[0].set_ylabel("Accuracy")
-                axes[0].grid(True)
-                axes[0].legend(loc="upper left")
-
-                axes[1].plot(
-                    perf_df["timestamp"],
-                    perf_df["precision"],
-                    marker="s",
-                    color="g",
-                    label="Precision",
-                )
-                axes[1].set_ylabel("Precision")
-                axes[1].grid(True)
-                axes[1].legend(loc="upper left")
-
-                axes[2].plot(
-                    perf_df["timestamp"],
-                    perf_df["recall"],
-                    marker="^",
-                    color="r",
-                    label="Recall",
-                )
-                axes[2].set_ylabel("Recall")
-                axes[2].grid(True)
-                axes[2].legend(loc="upper left")
-
-                plt.xlabel("Time")
-                plt.tight_layout()
-                st.pyplot(fig)
-            else:
-                st.info("No performance metrics available yet to plot.")
-        except Exception as e:
-            st.info(
-                f"Performance metrics table not found or empty. Details: {e}"
-            )
-
