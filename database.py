@@ -233,24 +233,8 @@ def log_performance(model_name, accuracy, precision, recall):
 
 
 def log_performance_metrics(accuracy, precision, recall, model_name="Default Model"):
-    """Logs updated model evaluation performance metrics into the database.
-    (Integrated helper matching expected app.py signature)
-    """
-    session = Session()
-    try:
-        metric = PerformanceMetric(
-            model_name=model_name,
-            accuracy=float(accuracy),
-            precision=float(precision),
-            recall=float(recall),
-        )
-        session.add(metric)
-        session.commit()
-    except Exception as e:
-        session.rollback()
-        raise e
-    finally:
-        session.close()
+    """Logs performance metrics matching legacy parameters via SQLAlchemy."""
+    log_performance(model_name, accuracy, precision, recall)
 
 
 def fetch_performance_metrics():
