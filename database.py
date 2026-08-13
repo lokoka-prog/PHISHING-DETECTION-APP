@@ -13,18 +13,12 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
-# ---------------------------------------------------------
-# Base Path Setup
-# ---------------------------------------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "phishing_detection.db")
 
 Base = declarative_base()
 
 
-# ---------------------------------------------------------
-# Database Models
-# ---------------------------------------------------------
 class EmailRecord(Base):
     __tablename__ = "emails"
     id = Column(Integer, primary_key=True, index=True)
@@ -52,6 +46,7 @@ class ManualCheck(Base):
     input_text = Column(Text, nullable=False)
     check_type = Column(String(50), nullable=False)
     result = Column(String(50), nullable=False)
+    risk_score = Column(Float, nullable=False, default=0.0)
     timestamp = Column(DateTime, default=datetime.utcnow, index=True)
 
 
@@ -73,23 +68,16 @@ class PerformanceMetric(Base):
     timestamp = Column(DateTime, default=datetime.utcnow)
 
 
-# ---------------------------------------------------------
-# Engine & Session Setup
-# ---------------------------------------------------------
 engine = create_engine(
     f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False}
 )
 Session = sessionmaker(bind=engine)
 
 
-# ---------------------------------------------------------
-# Utility Helper Functions
-# ---------------------------------------------------------
 def init_db():
-    """Creates all database tables and performs automatic schema migrations for existing tables."""
+    """Creates database tables and applies automatic column migrations if needed."""
     Base.metadata.create_all(engine)
 
-    # Self-healing migration for existing databases missing the username column
     with engine.connect() as conn:
         try:
             conn.execute(
@@ -99,12 +87,21 @@ def init_db():
             )
             conn.commit()
         except Exception:
-            # Column already exists or table was cleanly initialized
+            pass
+
+        try:
+            conn.execute(
+                text(
+                    "ALTER TABLE manual_checks ADD COLUMN risk_score FLOAT DEFAULT 0.0"
+                )
+            )
+            conn.commit()
+        except Exception:
             pass
 
 
-def log_prediction(username, input_text, check_type, result):
-    """Logs prediction results linked to a specific username."""
+def log_prediction(username, input_text, check_type, result, risk_score=0.0):
+    """Logs prediction results and risk score linked to a specific username."""
     session = Session()
     try:
         user_str = username or "anonymous"
@@ -113,6 +110,7 @@ def log_prediction(username, input_text, check_type, result):
             input_text=input_text,
             check_type=check_type,
             result=result,
+            risk_score=float(risk_score),
         )
         session.add(check)
         session.commit()
@@ -124,7 +122,7 @@ def log_prediction(username, input_text, check_type, result):
 
 
 def fetch_logs(username):
-    """Fetches logged predictions exclusively for the active username as dictionary objects."""
+    """Fetches logged predictions exclusively for the active username."""
     session = Session()
     try:
         if not username:
@@ -143,10 +141,26 @@ def fetch_logs(username):
                 "input_text": l.input_text,
                 "check_type": l.check_type,
                 "result": l.result,
+                "risk_score": getattr(l, "risk_score", 0.0),
                 "timestamp": l.timestamp,
             }
             for l in logs
         ]
+    finally:
+        session.close()
+
+
+def clear_user_logs(username):
+    """Clears all audit logs for a specific user."""
+    session = Session()
+    try:
+        session.query(ManualCheck).filter(
+            ManualCheck.username == username
+        ).delete()
+        session.commit()
+    except Exception as e:
+        session.rollback()
+        raise e
     finally:
         session.close()
 
@@ -159,6 +173,22 @@ def add_connected_account(username, email_address):
             username=username, email_address=email_address
         )
         session.add(account)
+        session.commit()
+    except Exception as e:
+        session.rollback()
+        raise e
+    finally:
+        session.close()
+
+
+def remove_connected_account(username, email_address):
+    """Removes a linked email account for a specific user."""
+    session = Session()
+    try:
+        session.query(ConnectedAccount).filter(
+            ConnectedAccount.username == username,
+            ConnectedAccount.email_address == email_address,
+        ).delete()
         session.commit()
     except Exception as e:
         session.rollback()
@@ -181,8 +211,3 @@ def fetch_connected_accounts(username):
         return [acc.email_address for acc in accounts]
     finally:
         session.close()
-
-
-if __name__ == "__main__":
-    init_db()
-    print("Database and all tables initialized successfully.")
