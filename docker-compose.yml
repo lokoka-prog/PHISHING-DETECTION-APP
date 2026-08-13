@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  phishing-detector:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: phishing_detector_app
+    ports:
+      - "8501:8501"
+    volumes:
+      # Mount local data directory to persist the SQLite database
+      - ./data:/app/data
+    env_file:
+      # Instructs Docker to load the variables from this file
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
