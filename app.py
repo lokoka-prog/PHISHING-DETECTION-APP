@@ -1,53 +1,48 @@
-import os
-import sys
+import sqlite3
 import pandas as pd
-import numpy as np
+import matplotlib.pyplot as plt
 import streamlit as st
 
-# Import your custom modules
-from database import fetch_data, log_prediction, fetch_performance_logs
-from url_checker import check_url
-from email_fetcher import fetch_emails
-from model_features import extract_features
-from predictor import PhishingPredictor
+from config import Config
+from database import init_db, log_prediction, fetch_logs
+from inference import PhishingPredictor
+from url_checker import analyze_url
+from email_fetcher import fetch_latest_emails
 
-# --- Page Configuration ---
-st.set_page_config(
-    page_title="AI Email & URL Phishing Detector",
-    page_icon="🛡️",
-    layout="wide"
-)
-
-st.title("🛡️ AI Email & URL Phishing Detector")
-
-# Initialize Predictor Model
-@st.cache_resource
-def load_model():
-    return PhishingPredictor(model_path="phishing_xgboost_model.pkl")
-
-predictor = load_model()
-
-# --- Desktop Notification Helper ---
-def send_desktop_notification(title, message):
-    """Safely attempt desktop notifications without crashing cloud/headless servers."""
+# --- Safe Desktop Notification Helper ---
+def send_notification(title, message):
+    """Safely trigger desktop notifications locally while preventing crashes in cloud environments."""
     try:
         from plyer import notification
         notification.notify(
             title=title,
             message=message,
-            app_name="Phishing Detector",
+            app_name="AI Phishing Detector",
             timeout=5
         )
     except Exception:
-        # Silently pass in cloud environments where desktop OS bindings aren't available
-        pass
+        # Fallback to Streamlit toast if desktop notification daemon is missing/unsupported
+        st.toast(f"🚨 {title}: {message}")
 
-# --- Navigation Tabs ---
+# --- Streamlit Page Configuration ---
+st.set_page_config(
+    page_title="AI Phishing Detection Dashboard",
+    page_icon="🛡️",
+    layout="wide"
+)
+
+# Initialize Database & Predictor
+init_db()
+predictor = PhishingPredictor(Config.MODEL_PATH, Config.VECTORIZER_PATH)
+
+st.title("🛡️ AI Email & URL Phishing Detector")
+
+# Navigation Tabs
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "🔗 URL Checker",
-    "📧 Real-time Email Monitor",
-    "📋 Audit Logs",
-    "📊 Performance History",
+    "🔗 URL Checker", 
+    "📧 Real-time Email Monitor", 
+    "📊 Audit Logs", 
+    "📈 Performance History",
     "⚙️ Background Monitor"
 ])
 
@@ -55,22 +50,22 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 # TAB 1: URL CHECKER
 # ==========================================
 with tab1:
-    st.header("Analyze URL")
-    url_input = st.text_input("Paste URL below:", placeholder="https://example.com")
+    st.subheader("Analyze URL")
+    url_input = st.text_input("Paste URL below:", key="url_input")
     
     if st.button("Check URL", key="check_url_btn"):
         if url_input.strip():
-            with st.spinner("Analyzing URL..."):
-                result, confidence, features = check_url(url_input, predictor)
-                
-                # Log to database
-                log_prediction(content_type="URL", input_data=url_input, result=result, confidence=confidence)
-                
-                if result == "Phishing":
-                    st.error(f"⚠️ Warning: Phishing detected! (Confidence: {confidence:.2f}%)")
-                    send_desktop_notification("Phishing Alert", f"Phishing detected in URL: {url_input}")
-                else:
-                    st.success(f"✅ Legitimate URL (Confidence: {confidence:.2f}%)")
+            pred, conf = analyze_url(url_input, predictor)
+            log_prediction(url_input, "URL", f"{pred} ({conf:.2%})")
+            
+            if pred == "Phishing":
+                st.error(f"⚠️ Warning: Phishing detected! (Confidence: {conf:.2%})")
+                send_notification(
+                    title="Phishing Alert",
+                    message=f"Phishing detected in URL! Confidence: {conf:.2%}"
+                )
+            else:
+                st.success(f"✅ Legitimate URL. (Confidence: {conf:.2%})")
         else:
             st.warning("Please enter a valid URL.")
 
@@ -78,69 +73,96 @@ with tab1:
 # TAB 2: REAL-TIME EMAIL MONITOR
 # ==========================================
 with tab2:
-    st.header("Real-time Email Monitor")
-    st.write("Scan inbox or individual email text for suspicious phishing indicators.")
-    
-    email_text = st.text_area("Paste Email Content / Headers:", height=150)
-    if st.button("Scan Email Text", key="scan_email_btn"):
-        if email_text.strip():
-            with st.spinner("Scanning email content..."):
-                # Placeholder for email analysis logic
-                res_type = "Phishing" if "login" in email_text.lower() else "Legitimate"
-                conf = 88.5
-                
-                log_prediction(content_type="Email", input_data=email_text[:100], result=res_type, confidence=conf)
-                
-                if res_type == "Phishing":
-                    st.error(f"⚠️ Suspicious Email Detected! (Confidence: {conf:.2f}%)")
-                    send_desktop_notification("Phishing Alert", "Suspicious email content flagged.")
-                else:
-                    st.success(f"✅ Email looks safe. (Confidence: {conf:.2f}%)")
-        else:
-            st.warning("Please paste email content to analyze.")
+    st.subheader("Email Credentials & Server Settings")
+    email_user = st.text_input("IMAP Email", value=Config.EMAIL_USER)
+    email_pass = st.text_input("App Password", value=Config.EMAIL_PASS, type="password")
+    imap_server = st.text_input("IMAP Server", value=Config.IMAP_SERVER)
+
+    if st.button("Fetch & Analyze Unread Emails", key="fetch_emails_btn"):
+        with st.spinner("Fetching emails..."):
+            emails, err = fetch_latest_emails(imap_server, Config.IMAP_PORT, email_user, email_pass)
+            if err:
+                st.error(f"Connection failed: {err}")
+            elif not emails:
+                st.info("No unread emails found.")
+            else:
+                for item in emails:
+                    content = f"Subject: {item['subject']}\nBody: {item['body']}"
+                    pred, conf = predictor.predict(content)
+                    log_prediction(content, "Email", f"{pred} ({conf:.2%})")
+                    
+                    if pred == "Phishing":
+                        st.error(f"🚨 PHISHING ALERT | From: {item['sender']} | Subject: {item['subject']}")
+                        send_notification(
+                            title="Phishing Email Detected",
+                            message=f"From: {item['sender']} | Subject: {item['subject']}"
+                        )
+                    else:
+                        st.success(f"📩 Legitimate Email | From: {item['sender']} | Subject: {item['subject']}")
 
 # ==========================================
 # TAB 3: AUDIT LOGS
 # ==========================================
 with tab3:
-    st.header("Scan Audit Logs")
-    logs = fetch_data()
-    
-    if logs is not None and not logs.empty:
-        st.dataframe(logs, use_container_width=True)
+    st.subheader("Prediction Audit Logs")
+    logs = fetch_logs()
+    if logs:
+        df = pd.DataFrame(logs, columns=["ID", "Content / Input", "Type", "Result", "Timestamp"])
+        df = df[["Timestamp", "ID", "Type", "Result", "Content / Input"]]
+        st.dataframe(df, use_container_width=True)
     else:
-        st.info("No audit logs recorded yet.")
+        st.write("No logs recorded yet.")
 
 # ==========================================
 # TAB 4: PERFORMANCE HISTORY
 # ==========================================
 with tab4:
-    st.header("Model Performance Trends")
-    perf_data = fetch_performance_logs()
+    st.subheader("Model Performance Trends")
     
-    if perf_data is not None and len(perf_data) > 0:
-        df_perf = pd.DataFrame(perf_data)
-        st.line_chart(df_perf)
-    else:
-        st.info("No performance metrics available yet to plot.")
+    try:
+        conn = sqlite3.connect("phishing_detection.db")
+        perf_df = pd.read_sql_query("SELECT * FROM performance_metrics ORDER BY timestamp ASC", conn)
+        conn.close()
+
+        if not perf_df.empty:
+            perf_df["timestamp"] = pd.to_datetime(perf_df["timestamp"])
+            
+            fig, axes = plt.subplots(3, 1, figsize=(8, 10), sharex=True)
+            
+            axes[0].plot(perf_df["timestamp"], perf_df["accuracy"], marker='o', color='b', label='Accuracy')
+            axes[0].set_ylabel("Accuracy")
+            axes[0].grid(True)
+            axes[0].legend(loc="upper left")
+            
+            axes[1].plot(perf_df["timestamp"], perf_df["precision"], marker='s', color='g', label='Precision')
+            axes[1].set_ylabel("Precision")
+            axes[1].grid(True)
+            axes[1].legend(loc="upper left")
+            
+            axes[2].plot(perf_df["timestamp"], perf_df["recall"], marker='^', color='r', label='Recall')
+            axes[2].set_ylabel("Recall")
+            axes[2].grid(True)
+            axes[2].legend(loc="upper left")
+            
+            plt.xlabel("Time")
+            plt.tight_layout()
+            st.pyplot(fig)
+        else:
+            st.info("No performance metrics available yet to plot.")
+    except Exception as e:
+        st.info("No performance metrics table found or available yet.")
 
 # ==========================================
 # TAB 5: BACKGROUND MONITOR
 # ==========================================
 with tab5:
-    st.header("Background Re-scan & Status Monitor")
-    st.write("Configure background URL re-scanning to monitor when offline flagged links return online.")
+    st.subheader("Background Monitoring Settings")
+    st.write("Configure periodic checking for offline flagged URLs.")
     
-    col1, col2 = st.columns(2)
-    with col1:
-        enable_monitoring = st.toggle("Enable Periodic Re-scan", value=False)
-        rescan_interval = st.selectbox("Re-scan Frequency", ["Every 1 hour", "Every 6 hours", "Every 24 hours"])
+    enable_bg = st.toggle("Enable Background Monitoring", value=False)
+    interval = st.selectbox("Check Interval", ["Every 1 hour", "Every 6 hours", "Every 24 hours"])
     
-    with col2:
-        st.metric(label="Active Tracked URLs", value="0")
-        st.metric(label="Offline -> Online Alerts", value="0")
-        
-    if enable_monitoring:
-        st.success(f"Background monitoring active. Frequency set to {rescan_interval}.")
+    if enable_bg:
+        st.success(f"Monitoring active: Re-checking offline targets {interval.lower()}.")
     else:
-        st.warning("Background monitoring is currently paused.")
+        st.info("Background monitoring is currently disabled.")
