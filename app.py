@@ -86,6 +86,13 @@ name = st.session_state.get('name')
 authentication_status = st.session_state.get('authentication_status')
 username = st.session_state.get('username')
 
+# Active User Resolution for Database and State Operations
+active_username = username or st.session_state.get('username') or name
+
+# Initialize User Session State for Connected Accounts
+if 'user_accounts' not in st.session_state:
+    st.session_state['user_accounts'] = []
+
 # ---------------------------------------------------------
 # 4. Application Routing & Tabs
 # ---------------------------------------------------------
@@ -95,7 +102,7 @@ if authentication_status is False:
 elif authentication_status is None:
     st.warning("Please enter your username and password")
     
-    # Registration form for new users (Updated API syntax)
+    # Registration form for new users
     with st.expander("Register New Account"):
         try:
             res = authenticator.register_user()
@@ -149,43 +156,62 @@ elif authentication_status:
                 else:
                     st.warning(f"**Result:** {result}")
 
-                # Save execution result to private DB logs
-                log_prediction(username, email_input, "Detection Engine", result)
+                # Save execution result to private DB logs safely
+                if active_username:
+                    log_prediction(active_username, email_input, "Detection Engine", result)
             else:
                 st.warning("Please input email text to analyze.")
 
-    # --- TAB 2: Connected Accounts ---
+    # --- TAB 2: Dynamic Connected Accounts ---
     with tab_accounts:
         st.header("Manage Connected Email Accounts")
-        st.caption("Link multiple accounts to scan incoming messages under your profile.")
+        st.caption("Link active email accounts to scan messages associated with your profile.")
         
-        st.subheader("Your Connected Accounts")
-        st.write("- `user.primary@gmail.com`")
-        st.write("- `user.work@company.com`")
+        st.subheader("Your Linked Accounts")
+        
+        # Display dynamically added user accounts
+        if st.session_state['user_accounts']:
+            for acc in st.session_state['user_accounts']:
+                st.write(f"- `{acc}`")
+        else:
+            st.info("No external email accounts linked yet. Use the form below to connect an account.")
 
+        st.divider()
         new_email = st.text_input("Add new email account address:")
         if st.button("Connect New Account"):
-            if new_email.strip():
-                st.success(f"Account link request initiated for {new_email}.")
+            clean_email = new_email.strip()
+            if clean_email:
+                if clean_email not in st.session_state['user_accounts']:
+                    st.session_state['user_accounts'].append(clean_email)
+                    st.success(f"Successfully linked **{clean_email}** to your profile!")
+                    st.rerun()
+                else:
+                    st.warning("This email address is already connected.")
             else:
                 st.warning("Please enter a valid email address.")
 
     # --- TAB 3: Private Audit Logs ---
     with tab_logs:
         st.header("Your Private Audit Logs")
-        st.caption(f"Showing scan history exclusively for username: **{username}**")
+        st.caption(f"Showing scan history exclusively for user: **{active_username}**")
 
-        user_logs = fetch_logs(username)
-        display_logs = [
-            {
-                "Timestamp": log["timestamp"].strftime("%Y-%m-%d %H:%M:%S") if hasattr(log["timestamp"], "strftime") else str(log["timestamp"]),
-                "Type": log["check_type"],
-                "Result": log["result"]
-            }
-            for log in user_logs
-        ]
-        
-        if display_logs:
-            st.table(display_logs)
+        if active_username:
+            try:
+                user_logs = fetch_logs(active_username) or []
+                display_logs = [
+                    {
+                        "Timestamp": log["timestamp"].strftime("%Y-%m-%d %H:%M:%S") if hasattr(log["timestamp"], "strftime") else str(log["timestamp"]),
+                        "Type": log.get("check_type", "N/A"),
+                        "Result": log.get("result", "N/A")
+                    }
+                    for log in user_logs
+                ]
+                
+                if display_logs:
+                    st.table(display_logs)
+                else:
+                    st.info("No audit logs found.")
+            except Exception as e:
+                st.error(f"Error fetching audit logs: {e}")
         else:
-            st.info("No audit logs found.")
+            st.warning("Unable to identify current session user for log retrieval.")
