@@ -1,13 +1,15 @@
-import email
-import imaplib
-import os
-import joblib
-import unittest
-import pandas as pd
 import streamlit as st
+import pandas as pd
+import matplotlib.pyplot as plt
+import os
+import unittest
 import streamlit_authenticator as stauth
 import yaml
 from yaml.loader import SafeLoader
+from plyer import notification
+import sqlite3
+
+from config import Config
 from database import (
     init_db,
     log_prediction,
@@ -17,18 +19,24 @@ from database import (
     remove_connected_account,
     fetch_connected_accounts,
 )
+from inference import PhishingPredictor
+from url_checker import analyze_url
+from email_fetcher import fetch_latest_emails
 
 # ---------------------------------------------------------
-# Base Path Setup
+# Base Path Setup & Configuration
 # ---------------------------------------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.yaml")
-MODEL_PATH = os.path.join(BASE_DIR, "model_features.pkl")
 
 # ---------------------------------------------------------
 # 1. Page Configuration & Custom CSS (Optimized Layout)
 # ---------------------------------------------------------
-st.set_page_config(page_title="AI Email & Phishing Detector", layout="wide")
+st.set_page_config(
+    page_title="AI Phishing Detection Dashboard",
+    page_icon="🛡️",
+    layout="wide"
+)
 
 custom_css = """
 <style>
@@ -58,113 +66,33 @@ st.markdown(custom_css, unsafe_allow_html=True)
 init_db()
 
 # ---------------------------------------------------------
-# 2. Machine Learning Model & Feature Extraction Mapping
+# 2. Machine Learning Model Engine Initialization
 # ---------------------------------------------------------
 @st.cache_resource
-def load_phishing_model():
-    """Loads the model_features.pkl file using absolute pathing with explicit validation."""
-    if os.path.exists(MODEL_PATH):
-        try:
-            loaded_obj = joblib.load(MODEL_PATH)
-            return loaded_obj
-        except Exception as e:
-            st.error(f"Error loading model_features.pkl: {e}")
-            return None
-    else:
-        st.warning(f"Model file 'model_features.pkl' not found at {MODEL_PATH}.")
+def load_predictor():
+    """Initializes the external PhishingPredictor using Config paths."""
+    try:
+        return PhishingPredictor(Config.MODEL_PATH, Config.VECTORIZER_PATH)
+    except Exception as e:
+        st.error(f"Error loading model or vectorizer: {e}")
         return None
 
-model = load_phishing_model()
-
-def extract_url_features(url_string):
-    """Maps structured URL attributes into numeric arrays for robust analysis."""
-    features = [
-        1 if "https" in url_string else -1,
-        -1 if len(url_string) > 75 else 1,
-        -1 if "@" in url_string else 1,
-        -1 if "//" in url_string[8:] else 1,
-        -1 if "-" in url_string else 1,
-        1 if "." in url_string else -1
-    ]
-    while len(features) < 30:
-        features.append(1)
-    return features[:30]
-
-
-def predict_safely(model_obj, text_content):
-    """Safely handles pipelines, feature lists, and arrays, ignoring string artifacts."""
-    if model_obj is None:
-        raise AttributeError("Model is not loaded.")
-
-    processed_input = text_content
-    if isinstance(text_content, str):
-        processed_input = extract_url_features(text_content)
-
-    if isinstance(model_obj, (list, tuple)):
-        clf = next((obj for obj in model_obj if not isinstance(obj, str) and hasattr(obj, "predict")), None)
-        preprocessor = next((obj for obj in model_obj if not isinstance(obj, str) and hasattr(obj, "transform") and not hasattr(obj, "predict")), None)
-        
-        if not clf:
-            raise AttributeError("No valid classifier with a .predict() method found in model bundle.")
-        
-        if preprocessor and hasattr(preprocessor, "transform") and isinstance(text_content, str):
-            try:
-                processed_input = preprocessor.transform([text_content])
-            except Exception:
-                processed_input = [extract_url_features(text_content)]
-
-        input_array = processed_input if hasattr(processed_input, "shape") else [processed_input]
-        return clf.predict(input_array)[0]
-    
-    if hasattr(model_obj, "predict"):
-        input_array = processed_input if hasattr(processed_input, "shape") else [processed_input]
-        return model_obj.predict(input_array)[0]
-        
-    raise TypeError("Loaded model object is not a valid classifier or estimator.")
-
-
-def calculate_risk_score(model_obj, text_content, prediction_result):
-    """Calculates risk score percentage using predict_proba if available, safely avoiding string mismatches."""
-    if model_obj is not None:
-        try:
-            clf = model_obj
-            input_data = [extract_url_features(text_content)] if isinstance(text_content, str) else [text_content]
-
-            if isinstance(model_obj, (list, tuple)):
-                clf = next((obj for obj in model_obj if not isinstance(obj, str) and hasattr(obj, "predict_proba")), None)
-                vec = next((obj for obj in model_obj if not isinstance(obj, str) and hasattr(obj, "transform") and not hasattr(obj, "predict")), None)
-                if vec and isinstance(text_content, str):
-                    input_data = vec.transform([text_content])
-
-            if clf and hasattr(clf, "predict_proba"):
-                proba = clf.predict_proba(input_data)[0]
-                risk_pct = round(proba[1] * 100, 2) if len(proba) > 1 else proba[0] * 100
-                return float(risk_pct)
-        except Exception:
-            pass
-
-    return 92.5 if prediction_result == "Phishing Detected" else 4.2
+predictor = load_predictor()
 
 
 # ---------------------------------------------------------
-# 3. Unit Tests for Prediction Pipeline
+# 3. Unit Tests for Pipeline Verification
 # ---------------------------------------------------------
-class TestPhishingPipeline(unittest.TestCase):
-    def test_url_feature_extraction(self):
-        feats = extract_url_features("https://example.com")
-        self.assertEqual(len(feats), 30)
-        self.assertEqual(feats[0], 1)
+class TestPhishingDashboardPipeline(unittest.TestCase):
+    def test_predictor_initialization(self):
+        self.assertIsNotNone(predictor, "Predictor failed to initialize.")
 
-    def test_predict_safely_mock(self):
-        class MockModel:
-            def predict(self, X):
-                return [1]
-        
-        res = predict_safely(MockModel(), "http://malicious-site.com")
-        self.assertEqual(res, 1)
+    def test_config_paths(self):
+        self.assertTrue(hasattr(Config, "MODEL_PATH"))
+        self.assertTrue(hasattr(Config, "VECTORIZER_PATH"))
 
 def run_unit_tests():
-    suite = unittest.TestLoader().loadTestsFromTestCase(TestPhishingPipeline)
+    suite = unittest.TestLoader().loadTestsFromTestCase(TestPhishingDashboardPipeline)
     runner = unittest.TextTestRunner(verbosity=0)
     result = runner.run(suite)
     return result.wasSuccessful()
@@ -173,61 +101,38 @@ run_unit_tests()
 
 
 # ---------------------------------------------------------
-# 4. IMAP Background Polling Engine
+# 4. Background IMAP Polling Engine
 # ---------------------------------------------------------
 def process_imap_inbox(user_email, email_password, imap_server, username):
-    """Fetches unread emails from an IMAP server, predicts risk, and logs to database."""
+    """Fetches unread emails using email_fetcher and predicts risk with PhishingPredictor."""
     try:
-        mail = imaplib.IMAP4_SSL(imap_server)
-        mail.login(user_email, email_password)
-        mail.select("inbox")
-
-        status, messages = mail.search(None, "UNSEEN")
-        if status != "OK":
+        emails, err = fetch_latest_emails(imap_server, getattr(Config, "IMAP_PORT", 993), user_email, email_password)
+        if err:
+            return 0, f"Connection failed: {err}"
+        if not emails:
             return 0, "No unread messages found."
 
-        email_ids = messages[0].split()
         processed_count = 0
+        for item in emails:
+            full_content = f"Subject: {item['subject']}\nBody: {item['body']}"
+            
+            if predictor is not None:
+                pred, conf = predictor.predict(full_content)
+                res_str = "Phishing Detected" if pred == "Phishing" else "Safe"
+                risk_score = round(conf * 100, 2)
+            else:
+                res_str = "Model Not Loaded"
+                risk_score = 0.0
 
-        for e_id in email_ids[:5]:
-            _, msg_data = mail.fetch(e_id, "(RFC822)")
-            for response_part in msg_data:
-                if isinstance(response_part, tuple):
-                    msg = email.message_from_bytes(response_part[1])
-                    subject = msg.get("Subject", "No Subject")
+            log_prediction(
+                username=username,
+                input_text=full_content[:500],
+                check_type=f"IMAP Auto ({user_email})",
+                result=res_str,
+                risk_score=risk_score,
+            )
+            processed_count += 1
 
-                    body = ""
-                    if msg.is_multipart():
-                        for part in msg.walk():
-                            if part.get_content_type() == "text/plain":
-                                body = part.get_payload(decode=True).decode()
-                                break
-                    else:
-                        body = msg.get_payload(decode=True).decode()
-
-                    full_content = f"Subject: {subject}\n\n{body}"
-
-                    if model is not None:
-                        try:
-                            pred = predict_safely(model, full_content)
-                            res_str = "Phishing Detected" if pred in [1, "Phishing", "phishing", "1"] else "Safe"
-                        except Exception:
-                            res_str = "Error"
-                    else:
-                        res_str = "Model Not Loaded"
-
-                    risk_score = calculate_risk_score(model, full_content, res_str)
-
-                    log_prediction(
-                        username=username,
-                        input_text=full_content[:500],
-                        check_type=f"IMAP Auto ({user_email})",
-                        result=res_str,
-                        risk_score=risk_score,
-                    )
-                    processed_count += 1
-
-        mail.logout()
         return processed_count, "Success"
     except Exception as e:
         return 0, str(e)
@@ -288,13 +193,13 @@ elif authentication_status:
 
     authenticator.logout("Logout", "sidebar")
 
-    st.title("🛡️ AI Email Phishing Detection Platform")
+    st.title("🛡️ AI Email & URL Phishing Detection Platform")
 
-    tab_detector, tab_accounts, tab_logs = st.tabs(
-        ["Detection Engine", "Connected Email Accounts", "Private Audit Logs"]
+    tab_detector, tab_accounts, tab_logs, tab_perf = st.tabs(
+        ["🔗 URL & Content Checker", "📧 Connected Email Accounts", "📊 Audit Logs", "📈 Performance History"]
     )
 
-    # --- TAB 1: Detection Engine with Optimized Threat Metrics Layout ---
+    # --- TAB 1: Detection Engine with Threat Metrics Layout ---
     with tab_detector:
         st.header("Analyze Email Content or URL")
         email_input = st.text_area("Paste raw email body, headers, or target URL here:", height=200)
@@ -303,20 +208,26 @@ elif authentication_status:
             if email_input.strip():
                 st.info("Extracting structural features and scoring content...")
 
-                if model is not None:
+                if predictor is not None:
                     try:
-                        prediction = predict_safely(model, email_input)
-                        if prediction in [1, "Phishing", "phishing", "1"]:
-                            result = "Phishing Detected"
+                        if email_input.startswith("http://") or email_input.startswith("https://") or ("." in email_input and " " not in email_input):
+                            pred, conf = analyze_url(email_input.strip(), predictor)
+                            check_source = "URL Checker"
                         else:
-                            result = "Safe"
+                            pred, conf = predictor.predict(email_input)
+                            check_source = "Content Engine"
+
+                        result = "Phishing Detected" if pred == "Phishing" else "Safe"
+                        risk_score = round(conf * 100, 2)
                     except Exception as e:
                         st.error(f"Prediction execution failed: {e}")
                         result = "Error"
+                        risk_score = 0.0
+                        check_source = "Error"
                 else:
                     result = "Model Not Loaded"
-
-                risk_score = calculate_risk_score(model, email_input, result)
+                    risk_score = 0.0
+                    check_source = "Offline"
 
                 st.markdown("### Threat Analysis Dashboard")
                 metric_col1, metric_col2, metric_col3 = st.columns(3)
@@ -324,6 +235,14 @@ elif authentication_status:
                 with metric_col1:
                     if result == "Phishing Detected":
                         st.error(f"**Classification**\n\n⚠️ {result}")
+                        try:
+                            notification.notify(
+                                title="Phishing Alert",
+                                message=f"Threat detected! Confidence: {risk_score}%",
+                                app_name="AI Phishing Detector",
+                            )
+                        except Exception:
+                            pass
                     elif result == "Safe":
                         st.success(f"**Classification**\n\n✅ {result}")
                     else:
@@ -338,20 +257,20 @@ elif authentication_status:
                     )
 
                 with metric_col3:
-                    confidence_level = "High Confidence" if model is not None else "Unavailable"
+                    confidence_level = "High Confidence" if predictor is not None else "Unavailable"
                     st.metric(
                         label="Model Engine Status",
-                        value="Active" if model is not None else "Offline",
+                        value="Active" if predictor is not None else "Offline",
                         delta=confidence_level
                     )
 
                 if active_username:
                     log_prediction(
-                        active_username,
-                        email_input,
-                        "Manual Detection Engine",
-                        result,
-                        risk_score,
+                        username=active_username,
+                        input_text=email_input[:500],
+                        check_type=check_source,
+                        result=f"{result} ({risk_score}%)",
+                        risk_score=risk_score,
                     )
             else:
                 st.warning("Please input text or a URL to analyze.")
@@ -374,9 +293,9 @@ elif authentication_status:
             st.success("🤖 Background collector active.")
             col_srv, col_pwd = st.columns(2)
             with col_srv:
-                imap_server = st.text_input("IMAP Server Host:", value="imap.gmail.com")
+                imap_server = st.text_input("IMAP Server Host:", value=getattr(Config, "IMAP_SERVER", "imap.gmail.com"))
             with col_pwd:
-                email_pwd = st.text_input("IMAP Password / App Password:", type="password")
+                email_pwd = st.text_input("IMAP Password / App Password:", value=getattr(Config, "EMAIL_PASS", ""), type="password")
 
             if st.button("Run Manual Sync Now"):
                 user_accounts = fetch_connected_accounts(active_username)
@@ -429,31 +348,20 @@ elif authentication_status:
 
     # --- TAB 3: Audit Logs with Risk Metrics & Clear Log Control ---
     with tab_logs:
-        st.header("Your Private Audit Logs")
-        st.caption(f"Showing scan history and risk scores for user: **{active_username}**")
+        st.header("Prediction Audit Logs")
+        st.caption(f"Showing scan history and logs for user: **{active_username}**")
 
         if active_username:
             try:
-                user_logs = fetch_logs(active_username) or []
-                display_logs = [
-                    {
-                        "Timestamp": log["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
-                        if hasattr(log["timestamp"], "strftime")
-                        else str(log["timestamp"]),
-                        "Type": log.get("check_type", "N/A"),
-                        "Result": log.get("result", "N/A"),
-                        "Risk Score": f"{log.get('risk_score', 0.0)}%",
-                    }
-                    for log in user_logs
-                ]
-
-                if display_logs:
-                    st.table(display_logs)
+                logs = fetch_logs(active_username) or fetch_logs()
+                if logs:
+                    df = pd.DataFrame(logs, columns=["ID", "Content / Input", "Type", "Result", "Timestamp"])
+                    df = df[["Timestamp", "ID", "Type", "Result", "Content / Input"]]
+                    st.dataframe(df, use_container_width=True)
 
                     col_dl, col_clr = st.columns([3, 1])
                     with col_dl:
-                        df_logs = pd.DataFrame(display_logs)
-                        csv_data = df_logs.to_csv(index=False).encode("utf-8")
+                        csv_data = df.to_csv(index=False).encode("utf-8")
                         st.download_button(
                             label="📥 Download Audit Logs as CSV",
                             data=csv_data,
@@ -467,8 +375,44 @@ elif authentication_status:
                             st.success("All audit logs cleared.")
                             st.rerun()
                 else:
-                    st.info("No audit logs found.")
+                    st.info("No audit logs recorded yet.")
             except Exception as e:
                 st.error(f"Error fetching audit logs: {e}")
         else:
             st.warning("Unable to identify current session user.")
+
+    # --- TAB 4: Performance History & Trends ---
+    with tab_perf:
+        st.header("Model Performance Trends")
+        try:
+            conn = sqlite3.connect("phishing_detection.db")
+            perf_df = pd.read_sql_query("SELECT * FROM performance_metrics ORDER BY timestamp ASC", conn)
+            conn.close()
+
+            if not perf_df.empty:
+                perf_df["timestamp"] = pd.to_datetime(perf_df["timestamp"])
+                
+                fig, axes = plt.subplots(3, 1, figsize=(8, 10), sharex=True)
+                
+                axes[0].plot(perf_df["timestamp"], perf_df["accuracy"], marker='o', color='b', label='Accuracy')
+                axes[0].set_ylabel("Accuracy")
+                axes[0].grid(True)
+                axes[0].legend(loc="upper left")
+                
+                axes[1].plot(perf_df["timestamp"], perf_df["precision"], marker='s', color='g', label='Precision')
+                axes[1].set_ylabel("Precision")
+                axes[1].grid(True)
+                axes[1].legend(loc="upper left")
+                
+                axes[2].plot(perf_df["timestamp"], perf_df["recall"], marker='^', color='r', label='Recall')
+                axes[2].set_ylabel("Recall")
+                axes[2].grid(True)
+                axes[2].legend(loc="upper left")
+                
+                plt.xlabel("Time")
+                plt.tight_layout()
+                st.pyplot(fig)
+            else:
+                st.info("No performance metrics available yet to plot.")
+        except Exception as e:
+            st.info("Performance metrics table not found or empty.")
