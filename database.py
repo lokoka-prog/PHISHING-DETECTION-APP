@@ -9,10 +9,13 @@ from sqlalchemy import (
     String,
     Text,
     create_engine,
+    text,
 )
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
-# Set absolute path for SQLite database file
+# ---------------------------------------------------------
+# Base Path Setup
+# ---------------------------------------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "phishing_detection.db")
 
@@ -45,7 +48,7 @@ class Feature(Base):
 class ManualCheck(Base):
     __tablename__ = "manual_checks"
     id = Column(Integer, primary_key=True, index=True)
-    username = Column(String(100), nullable=False, index=True)
+    username = Column(String(100), nullable=False, default="anonymous", index=True)
     input_text = Column(Text, nullable=False)
     check_type = Column(String(50), nullable=False)
     result = Column(String(50), nullable=False)
@@ -83,8 +86,21 @@ Session = sessionmaker(bind=engine)
 # Utility Helper Functions
 # ---------------------------------------------------------
 def init_db():
-    """Creates all database tables if they do not exist."""
+    """Creates all database tables and performs automatic schema migrations for existing tables."""
     Base.metadata.create_all(engine)
+
+    # Self-healing migration for existing databases missing the username column
+    with engine.connect() as conn:
+        try:
+            conn.execute(
+                text(
+                    "ALTER TABLE manual_checks ADD COLUMN username TEXT DEFAULT 'anonymous'"
+                )
+            )
+            conn.commit()
+        except Exception:
+            # Column already exists or table was cleanly initialized
+            pass
 
 
 def log_prediction(username, input_text, check_type, result):
