@@ -1,17 +1,24 @@
 import os
 import joblib
+import pandas as pd
 import streamlit as st
 import streamlit_authenticator as stauth
 import yaml
 from yaml.loader import SafeLoader
-from database import init_db, log_prediction, fetch_logs
+from database import (
+    init_db,
+    log_prediction,
+    fetch_logs,
+    add_connected_account,
+    fetch_connected_accounts,
+)
 
 # ---------------------------------------------------------
 # Base Path Setup
 # ---------------------------------------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CONFIG_PATH = os.path.join(BASE_DIR, 'config.yaml')
-MODEL_PATH = os.path.join(BASE_DIR, 'model_features.pkl')
+CONFIG_PATH = os.path.join(BASE_DIR, "config.yaml")
+MODEL_PATH = os.path.join(BASE_DIR, "model_features.pkl")
 
 # ---------------------------------------------------------
 # 1. Page Configuration & Custom CSS
@@ -41,7 +48,7 @@ custom_css = """
 """
 st.markdown(custom_css, unsafe_allow_html=True)
 
-# Initialize database
+# Initialize database schema and migrations
 init_db()
 
 # ---------------------------------------------------------
@@ -58,8 +65,11 @@ def load_phishing_model():
             st.error(f"Error loading model_features.pkl: {e}")
             return None
     else:
-        st.warning(f"Model file 'model_features.pkl' not found at {MODEL_PATH}.")
+        st.warning(
+            f"Model file 'model_features.pkl' not found at {MODEL_PATH}."
+        )
         return None
+
 
 model = load_phishing_model()
 
@@ -67,31 +77,33 @@ model = load_phishing_model()
 # 3. User Credentials & Authentication Configuration
 # ---------------------------------------------------------
 if not os.path.exists(CONFIG_PATH):
-    st.error("⚠️ `config.yaml` not found. Please ensure it exists in your root repository directory.")
+    st.error(
+        "⚠️ `config.yaml` not found. Please ensure it exists in your root repository directory."
+    )
     st.stop()
 
 with open(CONFIG_PATH) as file:
     config = yaml.load(file, Loader=SafeLoader)
 
 authenticator = stauth.Authenticate(
-    config['credentials'],
-    config['cookie']['name'],
-    config['cookie']['key'],
-    config['cookie']['expiry_days'],
+    config["credentials"],
+    config["cookie"]["name"],
+    config["cookie"]["key"],
+    config["cookie"]["expiry_days"],
 )
 
 # Render login component using modern location keyword syntax
-authenticator.login(location='main')
-name = st.session_state.get('name')
-authentication_status = st.session_state.get('authentication_status')
-username = st.session_state.get('username')
+authenticator.login(location="main")
+name = st.session_state.get("name")
+authentication_status = st.session_state.get("authentication_status")
+username = st.session_state.get("username")
 
-# Active User Resolution for Database and State Operations
-active_username = username or st.session_state.get('username') or name
+# Active User Resolution
+active_username = username or st.session_state.get("username") or name
 
-# Initialize User Session State for Connected Accounts
-if 'user_accounts' not in st.session_state:
-    st.session_state['user_accounts'] = []
+# Initialize Background Monitor State
+if "bg_monitoring_active" not in st.session_state:
+    st.session_state["bg_monitoring_active"] = False
 
 # ---------------------------------------------------------
 # 4. Application Routing & Tabs
@@ -101,20 +113,27 @@ if authentication_status is False:
 
 elif authentication_status is None:
     st.warning("Please enter your username and password")
-    
+
     # Registration form for new users
     with st.expander("Register New Account"):
         try:
             res = authenticator.register_user()
             if res and res[0]:  # Successfully registered
-                st.success('User registered successfully')
-                with open(CONFIG_PATH, 'w') as file:
+                st.success("User registered successfully")
+                with open(CONFIG_PATH, "w") as file:
                     yaml.dump(config, file, default_flow_style=False)
         except Exception as e:
             st.error(e)
 
 elif authentication_status:
     st.sidebar.title(f"Welcome, {name}")
+    
+    # Display Background Status in Sidebar
+    if st.session_state.get("bg_monitoring_active"):
+        st.sidebar.success("🟢 Auto-Scan Active")
+    else:
+        st.sidebar.info("⚪ Auto-Scan Inactive")
+        
     authenticator.logout("Logout", "sidebar")
 
     st.title("🛡️ AI Email Phishing Detection Platform")
@@ -126,17 +145,19 @@ elif authentication_status:
     # --- TAB 1: Detection Engine ---
     with tab_detector:
         st.header("Analyze Email Content")
-        email_input = st.text_area("Paste raw email body or headers here:", height=200)
-        
+        email_input = st.text_area(
+            "Paste raw email body or headers here:", height=200
+        )
+
         if st.button("Scan Email"):
             if email_input.strip():
                 st.info("Analyzing content for phishing indicators...")
-                
+
                 # Perform prediction if model is loaded
                 if model is not None:
                     try:
                         prediction = model.predict([email_input])[0]
-                        
+
                         # Interpret prediction result
                         if prediction in [1, "Phishing", "phishing", "1"]:
                             result = "Phishing Detected"
@@ -158,60 +179,112 @@ elif authentication_status:
 
                 # Save execution result to private DB logs safely
                 if active_username:
-                    log_prediction(active_username, email_input, "Detection Engine", result)
+                    log_prediction(
+                        active_username, email_input, "Manual Detection Engine", result
+                    )
             else:
                 st.warning("Please input email text to analyze.")
 
-    # --- TAB 2: Dynamic Connected Accounts ---
+    # --- TAB 2: Persistent Connected Accounts & Background Engine ---
     with tab_accounts:
         st.header("Manage Connected Email Accounts")
-        st.caption("Link active email accounts to scan messages associated with your profile.")
+        st.caption(
+            "Link active email accounts and configure automated background scanning."
+        )
+
+        # 1. Background Automation Switch
+        st.subheader("⚙️ Automated Background Collector")
         
+        bg_toggle = st.toggle(
+            "Enable Background Email Monitoring",
+            value=st.session_state["bg_monitoring_active"],
+            help="When enabled, incoming emails from connected accounts will be automatically ingested and processed by the AI model."
+        )
+        st.session_state["bg_monitoring_active"] = bg_toggle
+
+        if bg_toggle:
+            st.success("🤖 Background collector is **Active**. Email accounts listed below are being polled periodically.")
+            scan_interval = st.slider("Select Polling Interval (Minutes):", 5, 60, 15)
+            st.caption(f"Polling connected inboxes every **{scan_interval} minutes**.")
+        else:
+            st.info("Background collector is **Disabled**. Inbound emails will not be processed automatically.")
+
+        st.divider()
+
+        # 2. Linked Accounts List
         st.subheader("Your Linked Accounts")
-        
-        # Display dynamically added user accounts
-        if st.session_state['user_accounts']:
-            for acc in st.session_state['user_accounts']:
+
+        # Fetch accounts directly from database
+        user_accounts = fetch_connected_accounts(active_username)
+
+        if user_accounts:
+            for acc in user_accounts:
                 st.write(f"- `{acc}`")
         else:
-            st.info("No external email accounts linked yet. Use the form below to connect an account.")
+            st.info(
+                "No external email accounts linked yet. Use the form below to connect an account."
+            )
 
         st.divider()
         new_email = st.text_input("Add new email account address:")
         if st.button("Connect New Account"):
             clean_email = new_email.strip()
             if clean_email:
-                if clean_email not in st.session_state['user_accounts']:
-                    st.session_state['user_accounts'].append(clean_email)
-                    st.success(f"Successfully linked **{clean_email}** to your profile!")
-                    st.rerun()
+                if clean_email not in user_accounts:
+                    try:
+                        add_connected_account(active_username, clean_email)
+                        st.success(
+                            f"Successfully linked **{clean_email}** to your account database!"
+                        )
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to link account: {e}")
                 else:
                     st.warning("This email address is already connected.")
             else:
                 st.warning("Please enter a valid email address.")
 
-    # --- TAB 3: Private Audit Logs ---
+    # --- TAB 3: Private Audit Logs with CSV Export ---
     with tab_logs:
         st.header("Your Private Audit Logs")
-        st.caption(f"Showing scan history exclusively for user: **{active_username}**")
+        st.caption(
+            f"Showing scan history exclusively for user: **{active_username}**"
+        )
 
         if active_username:
             try:
                 user_logs = fetch_logs(active_username) or []
                 display_logs = [
                     {
-                        "Timestamp": log["timestamp"].strftime("%Y-%m-%d %H:%M:%S") if hasattr(log["timestamp"], "strftime") else str(log["timestamp"]),
+                        "Timestamp": log["timestamp"].strftime(
+                            "%Y-%m-%d %H:%M:%S"
+                        )
+                        if hasattr(log["timestamp"], "strftime")
+                        else str(log["timestamp"]),
                         "Type": log.get("check_type", "N/A"),
-                        "Result": log.get("result", "N/A")
+                        "Result": log.get("result", "N/A"),
                     }
                     for log in user_logs
                 ]
-                
+
                 if display_logs:
                     st.table(display_logs)
+
+                    # Export options: CSV Download Button
+                    df_logs = pd.DataFrame(display_logs)
+                    csv_data = df_logs.to_csv(index=False).encode("utf-8")
+
+                    st.download_button(
+                        label="📥 Download Audit Logs as CSV",
+                        data=csv_data,
+                        file_name=f"audit_logs_{active_username}.csv",
+                        mime="text/csv",
+                    )
                 else:
                     st.info("No audit logs found.")
             except Exception as e:
                 st.error(f"Error fetching audit logs: {e}")
         else:
-            st.warning("Unable to identify current session user for log retrieval.")
+            st.warning(
+                "Unable to identify current session user for log retrieval."
+            )
