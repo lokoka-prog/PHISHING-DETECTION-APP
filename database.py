@@ -211,3 +211,67 @@ def fetch_connected_accounts(username):
         return [acc.email_address for acc in accounts]
     finally:
         session.close()
+
+
+def log_performance(model_name, accuracy, precision, recall):
+    """Logs model evaluation metrics using ORM."""
+    session = Session()
+    try:
+        metric = PerformanceMetric(
+            model_name=model_name,
+            accuracy=float(accuracy),
+            precision=float(precision),
+            recall=float(recall),
+        )
+        session.add(metric)
+        session.commit()
+    except Exception as e:
+        session.rollback()
+        raise e
+    finally:
+        session.close()
+
+
+def log_performance_metrics(accuracy, precision, recall, model_name="Default Model"):
+    """Logs updated model evaluation performance metrics into the database.
+    (Integrated helper matching expected app.py signature)
+    """
+    session = Session()
+    try:
+        metric = PerformanceMetric(
+            model_name=model_name,
+            accuracy=float(accuracy),
+            precision=float(precision),
+            recall=float(recall),
+        )
+        session.add(metric)
+        session.commit()
+    except Exception as e:
+        session.rollback()
+        raise e
+    finally:
+        session.close()
+
+
+def fetch_performance_metrics():
+    """Retrieves all logged model performance history."""
+    session = Session()
+    try:
+        metrics = (
+            session.query(PerformanceMetric)
+            .order_by(PerformanceMetric.timestamp.asc())
+            .all()
+        )
+        return [
+            {
+                "id": m.id,
+                "model_name": m.model_name,
+                "accuracy": m.accuracy,
+                "precision": m.precision,
+                "recall": m.recall,
+                "timestamp": m.timestamp,
+            }
+            for m in metrics
+        ]
+    finally:
+        session.close()
